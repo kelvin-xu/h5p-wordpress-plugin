@@ -982,10 +982,26 @@ class H5P_Plugin_Admin {
         'search' => __('Search', $this->plugin_slug),
         'remove' => __('Remove', $this->plugin_slug),
         'empty' => $empty,
+        'showOwnContentOnly' => __('Show my content only', $this->plugin_slug)
       )
     );
     $plugin = H5P_Plugin::get_instance();
     $settings = array('dataViews' => $data_views);
+
+	// Add user object to H5PIntegration
+	$user = wp_get_current_user();
+	if ( $user->ID !== 0 ) {
+		$user = array(
+			'user' => array(
+				'id' => $user->ID,
+				'name' => $user->display_name,
+				// TODO: Have a "capability" object or something similar?
+				'canViewOthersH5Pcontents' => current_user_can('view_others_h5p_contents')
+			)
+		);
+		$settings = array_merge( $settings, $user );
+	}
+
     $plugin->print_settings($settings);
 
     // Add JS
