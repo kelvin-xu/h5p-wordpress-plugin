@@ -124,6 +124,10 @@ class H5P_Plugin_Admin {
     add_action('wp_ajax_h5p_embed', array($this, 'embed'));
     add_action('wp_ajax_nopriv_h5p_embed', array($this, 'embed'));
 
+    // OEmbed
+    add_action('wp_ajax_h5p_oembed', array($this, 'oembed'));
+    add_action('wp_ajax_nopriv_h5p_oembed', array($this, 'oembed'));
+
     // Remove user data and results
     add_action('deleted_user', array($this, 'deleted_user'));
   }
@@ -228,6 +232,13 @@ class H5P_Plugin_Admin {
 
           $additional_embed_head_tags = array();
 
+          // OEmbed discovery
+          $oembed_url_base = admin_url('admin-ajax.php')
+            . '?action=h5p_oembed'
+            . '&url=' . urlencode($integration['contents']['cid-' . $content['id']]['url']);
+          array_push($additional_embed_head_tags, '<link rel="alternate" type="application/json+oembed" href="' . $oembed_url_base . '&format=json' . '" title="' . $content['title'] . '"></link>');
+          array_push($additional_embed_head_tags, '<link rel="alternate" type="text/xml-oembed" href="' . $oembed_url_base . '&format=xml' . '" title="' . $content['title'] . '"></link>');
+
           /**
            * Add support for additional head tags for embedded content.
            * Very useful when adding xAPI events tracking code.
@@ -254,6 +265,132 @@ class H5P_Plugin_Admin {
     // Simple unavailble page
     print '<body style="margin:0"><div style="background: #fafafa url(' . plugins_url('h5p/h5p-php-library/images/h5p.svg') . ') no-repeat center;background-size: 50% 50%;width: 100%;height: 100%;"></div><div style="width:100%;position:absolute;top:75%;text-align:center;color:#434343;font-family: Consolas,monaco,monospace">' . __('Content unavailable.', $this->plugin_slug) . '</div></body>';
     exit;
+  }
+
+  /**
+   * Print oembed response
+   */
+  public function oembed() {
+    $url = filter_input(INPUT_GET, 'url', FILTER_SANITIZE_URL);
+    $format = filter_input(INPUT_GET, 'format', FILTER_SANITIZE_STRING);
+
+    $max_width = filter_input(INPUT_GET, 'maxwidth', FILTER_SANITIZE_NUMBER_INT);
+    $max_width = ($max_width === NULL) ? INF : $max_width;
+    $max_height = filter_input(INPUT_GET, 'maxheight', FILTER_SANITIZE_NUMBER_INT);
+    $max_height = ($max_height === NULL) ? INF : $max_height;
+
+    // Extract H5P content ID from URL
+    $id = array_reduce(explode('&', parse_url($url, PHP_URL_QUERY)), function($id, $current) {
+      if (isset($id)) {
+        return $id;
+      }
+
+      $current = explode('=', $current);
+      if (count($current) < 2 || $current[0] !== 'id') {
+        return;
+      }
+
+      return $current[1];
+    } );
+
+    if ($id !== NULL) {
+      $plugin = H5P_Plugin::get_instance();
+      $content = $plugin->get_content($id);
+
+      if (!is_string($content)) {
+        // Everyone is allowed to embed, set through settings
+        $embed_allowed = (get_option('h5p_embed', TRUE) && !($content['disable'] & H5PCore::DISABLE_EMBED));
+        $embed_allowed = apply_filters('h5p_embed_access', $embed_allowed, $id);
+
+        if (!$embed_allowed) {
+          // Check to see if embed URL always should be available
+          $embed_allowed = (defined('H5P_EMBED_URL_ALWAYS_AVAILABLE') && H5P_EMBED_URL_ALWAYS_AVAILABLE);
+        }
+
+        if ($embed_allowed) {
+          $response = array();
+          $response['type'] = 'rich';
+          $response['version'] = '1.0';
+
+          // Retrieve from content metadata
+          if (isset($content['metadata'])) {
+            $metadata = $content['metadata'];
+
+            if (isset($metadata['authors'])) {
+              $authors = array_map(function ($author) {
+                return $author->name;
+              }, $metadata['authors']);
+              $authors = implode($authors, ', ');
+              $response['author_name'] = self::getEncodedString($authors, $format);
+            }
+          }
+
+          $response['provider_name'] = self::getEncodedString(get_bloginfo('name'), $format);
+          $response['provider_url'] = get_site_url();
+          $response['width'] = intval(min(640, $max_width));
+          $response['height'] = intval(min(640, $max_height));
+
+          // Embed Code
+          $embedCode = '<iframe src="' . admin_url('admin-ajax.php?action=h5p_embed&id=' . $id) . '" width="' . $response['width'] . '" height="' . $response['height'] . '" frameborder="0" allowfullscreen="allowfullscreen" allow="geolocation *; microphone *; camera *; midi *; encrypted-media *"></iframe>';
+          $resizeCode = '<script src="' . plugins_url('h5p/h5p-php-library/js/h5p-resizer.js') . '" charset="UTF-8"></script>';
+          $response['html'] = self::getEncodedString($embedCode . $resizeCode, $format);
+
+          // Thumbnail
+          $response['thumbnail_url'] = 'https://h5p.com/img/v4_640_640.png'; // TODO: Use local file
+          if (isset($response['thumbnail_url'])) {
+            $imageSize = getimagesize($response['thumbnail_url']);
+
+            $response['thumbnail_width'] = intval(min($imageSize[0], $max_width));
+            $response['thumbnail_height'] = intval(min($imageSize[1], $max_height));
+
+            // Scale thumbnail image if required
+            $input_ratio = $imageSize[0] / $imageSize[1];
+            $output_ratio = $response['thumbnail_width'] / $response['thumbnail_height'];
+            if ($output_ratio > $input_ratio) {
+              round($response['thumbnail_width'] = $response['thumbnail_height'] * $input_ratio);
+            }
+            else if ($output_ratio < $input_ratio) {
+              round($response['thumbnail_height'] = $response['thumbnail_width'] * $input_ratio);
+            }
+          }
+
+          // Return response in requested format
+          if ($format === 'xml') {
+            header('Content-Type: text/xml; charset=UTF-8');
+            echo '<?xml version="1.0" encoding="utf-8" standalone="yes"?>';
+            echo '<oembed>';
+            foreach ($response as $property => $value) {
+              echo '<' . $property . '>' . $value .  '</' . $property . '>';
+            }
+            echo '</oembed>';
+          }
+          else {
+            header('Content-Type: application/json');
+            echo json_encode($response, JSON_HEX_APOS);
+          }
+
+          exit;
+        }
+      }
+    }
+
+    // Simple unavailble page
+    print '<body style="margin:0"><div style="background: #fafafa url(' . plugins_url('h5p/h5p-php-library/images/h5p.svg') . ') no-repeat center;background-size: 50% 50%;width: 100%;height: 100%;"></div><div style="width:100%;position:absolute;top:75%;text-align:center;color:#434343;font-family: Consolas,monaco,monospace">' . __('Content unavailable.', $this->plugin_slug) . '</div></body>';
+    exit;
+  }
+
+  /**
+   * Get suitable string encoding.
+   * @param string $text Text to encode.
+   * @param string $format [json|xml].
+   * @return string Encoded string.
+   */
+  static function getEncodedString($text, $format='json') {
+    if ($format === 'xml') {
+      return htmlentities($text);
+    }
+
+    return html_entity_decode($text, ENT_QUOTES);
   }
 
   /**
