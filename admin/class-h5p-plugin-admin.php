@@ -336,7 +336,7 @@ class H5P_Plugin_Admin {
           $response['html'] = self::getEncodedString($embedCode . $resizeCode, $format);
 
           // Thumbnail
-          $response['thumbnail_url'] = 'https://h5p.com/img/v4_640_640.png'; // TODO: Use local file
+          $response['thumbnail_url'] = plugins_url('h5p/admin/assets/oembed_start.png');
           if (isset($response['thumbnail_url'])) {
             $imageSize = getimagesize($response['thumbnail_url']);
 
